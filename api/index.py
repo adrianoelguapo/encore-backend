@@ -3,7 +3,7 @@ from flask_pymongo import PyMongo
 from flask_cors import CORS
 from flask_bcrypt import Bcrypt
 from bson import ObjectId
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from functools import wraps
 import jwt
 import os
@@ -43,8 +43,9 @@ def get_next_id(collection_name):
     last_doc = collection.find_one(sort = [("id", -1)])
     return 1 if not last_doc else last_doc["id"] + 1
 
-# --- Validar extensión de archivo ---
+# --- Restringir extensiones para subir imágenes ---
 def allowed_file(filename):
+    
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
@@ -60,7 +61,12 @@ def get_activity_dates(activity_id):
     return activity["start"], activity["finish"]
 
 # --- Comprobar si alguna reserva pisa el horario de otra (solo se tienen en cuenta las reservas no canceladas) ---
-def check_time_overlap(user_bookings, new_start, new_finish, exclude_activity_id=None):
+def check_time_overlap(user_bookings, new_start, new_finish, exclude_activity_id = None, activities_map = None):
+
+    # --- if activities_map is not provided, fetch all activities once (fallback) ---
+    if activities_map is None:
+        activities = list(db.activities.find({}, {"_id": 0}))
+        activities_map = {a["id"]: a for a in activities}
 
     # --- Se recorren todas las reservas del usuario ---
     for booking in user_bookings:
@@ -73,12 +79,15 @@ def check_time_overlap(user_bookings, new_start, new_finish, exclude_activity_id
         if booking.get("activity_state") in ["cancel", "no assist"]:
             continue
         
-        # --- Obtener las fechas de la actividad de la reserva ---
-        booking_start, booking_finish = get_activity_dates(booking["activity_id"])
+        # --- Obtener las fechas de la actividad de la reserva desde el mapa ---
+        activity = activities_map.get(booking["activity_id"])
         
-        # --- Si no se pueden obtener las fechas, saltar ---
-        if not booking_start or not booking_finish:
+        # --- Si no se encuentra la actividad, saltar ---
+        if not activity:
             continue
+            
+        booking_start = activity["start"]
+        booking_finish = activity["finish"]
         
         # --- Comprobar si se pisan: dos periodos se pisan si uno empieza antes de que termine el otro ---
         if (new_start < booking_finish and new_finish > booking_start):
@@ -176,6 +185,7 @@ def login():
         
         # --- Validar que se proporcionen nombre de usuario y pass ---
         if not username or not password:
+
             return jsonify({"error": "Username y password son requeridos"}), 400
         
         # --- Busca el usuario en base de datos (se busca por username porque es UNIQUE) ---
@@ -192,7 +202,7 @@ def login():
             "user_id": user["id"],
             "username": user["username"],
             "role": user["role"],
-            "exp": datetime.utcnow() + timedelta(hours = 24)
+            "exp": datetime.now(UTC) + timedelta(hours = 24)
 
         }, app.config["SECRET_KEY"], algorithm = "HS256")
         
@@ -271,9 +281,9 @@ def register():
             "user_id": new_user["id"],
             "username": new_user["username"],
             "role": new_user["role"],
-            "exp": datetime.utcnow() + timedelta(hours=24)
+            "exp": datetime.now(UTC) + timedelta(hours = 24)
 
-        }, app.config["SECRET_KEY"], algorithm="HS256")
+        }, app.config["SECRET_KEY"], algorithm = "HS256")
         
         # --- Se preparan los datos del usuario (sin pass (ya existe el token) ni el id de Mongo (no se utiliza)) ---
         user_data = {
@@ -480,28 +490,29 @@ def get_user_bookings(current_user, id_usuario):
 
             return jsonify({"error": "Usuario no encontrado"}), 404
         
+        # --- Buscar todas las actividades para evitar N+1 queries ---
+        activities_list = list(db.activities.find({}, {"_id": 0}))
+        activities_map = {a["id"]: a for a in activities_list}
+
         # --- Añadir información de las actividades a las reservas ---
         enriched_bookings = []
 
         # --- Recorrer las reservas del usuario ---
         for booking in user.get("bookings", []):
             
-            # --- Buscar la actividad ---
-            activity = db.activities.find_one({"id": booking["activity_id"]}, {"_id": 0})
+            # --- Buscar la actividad en el mapa ---
+            activity = activities_map.get(booking["activity_id"])
             
             # --- Si se encuentra la actividad, se añade a la lista ---
             if activity:
-
                 enriched_bookings.append({
-
                     "activity_id": booking["activity_id"],
                     "activity_name": activity["name"],
                     "activity_description": activity["description"],
-                    "activity_start": activity["start"],
-                    "activity_finish": activity["finish"],
+                    "activity_start": (activity["start"].isoformat() + "Z") if isinstance(activity["start"], datetime) else activity["start"],
+                    "activity_finish": (activity["finish"].isoformat() + "Z") if isinstance(activity["finish"], datetime) else activity["finish"],
                     "activity_state": booking["activity_state"],
-                    "booked_at": booking.get("booked_at")
-
+                    "booked_at": (booking.get("booked_at").isoformat() + "Z") if isinstance(booking.get("booked_at"), datetime) else booking.get("booked_at")
                 })
         
         # --- Devolver las reservas ---    
@@ -570,7 +581,7 @@ def book_activity(current_user, id_usuario, id_actividad):
 
             "activity_id": id_actividad,
             "activity_state": "assist",     # --- Por defecto, se asume que el usuario asiste a la actividad ---
-            "booked_at": datetime.utcnow() 
+            "booked_at": datetime.now(UTC) 
 
         }
         
@@ -583,7 +594,7 @@ def book_activity(current_user, id_usuario, id_actividad):
                 {"$set": {
 
                     "bookings.$.activity_state": "assist",
-                    "bookings.$.booked_at": datetime.utcnow()
+                    "bookings.$.booked_at": datetime.now(UTC)
 
                 }}
 
@@ -661,7 +672,7 @@ def cancel_activity(current_user, id_usuario, id_actividad):
         
         # --- Calcular tiempo hasta el inicio de la actividad ---
         activity_start = activity["start"]
-        time_until_start = activity_start - datetime.utcnow()
+        time_until_start = activity_start - datetime.now(UTC).replace(tzinfo=None) # MongoDB dates are naive but UTC usually
         
         # --- Si cancela antes de 15min, se cancela pero si queda menos de 15min, se marca como no asistido ---
         if time_until_start > timedelta(minutes = 15):
@@ -680,13 +691,20 @@ def cancel_activity(current_user, id_usuario, id_actividad):
 
         )
         
-        # --- Se elimina el usuario de la lista de asistentes de la actividad ---
-        db.activities.update_one(
+        # --- Si es una cancelación limpia (más de 15min), se elimina el usuario de la actividad ---
+        if new_state == "cancel":
 
-            {"id": id_actividad},
-            {"$pull": {"users": user["username"]}}
+            db.activities.update_one(
 
-        )
+                {"id": id_actividad},
+                {"$pull": {"users": user["username"]}}
+
+            )
+        # --- Si es no assist (menos de 15min), NO se elimina para que la plaza siga ocupada ---
+        else:
+
+            # --- El usuario permanece en activity["users"] ---
+            pass
         
         # --- Se devuelve mensaje de éxito ---
         return jsonify({
@@ -789,9 +807,13 @@ def get_all_activities(current_user):
         
         # --- Convertir fechas a string ISO para el frontend ---
         for activity in activities:
+
             if "start" in activity and isinstance(activity["start"], datetime):
+
                 activity["start"] = activity["start"].isoformat()
+
             if "finish" in activity and isinstance(activity["finish"], datetime):
+
                 activity["finish"] = activity["finish"].isoformat()
 
         # --- Se devuelve la lista de actividades ---
@@ -820,8 +842,11 @@ def get_activity(current_user, id_actividad):
         
         # --- Convertir fechas a string ISO ---
         if "start" in activity and isinstance(activity["start"], datetime):
+
             activity["start"] = activity["start"].isoformat()
+
         if "finish" in activity and isinstance(activity["finish"], datetime):
+
             activity["finish"] = activity["finish"].isoformat()
 
         # --- Se devuelve la actividad ---
@@ -842,10 +867,12 @@ def create_activity(current_user):
     try:
 
         # --- Obtener datos de la actividad (del form data si hay archivo, o json) ---
-        # --- Al enviar archivos, los datos vienen en request.form, no en request.json ---
         if request.content_type and 'multipart/form-data' in request.content_type:
+
             data = request.form
+
         else:
+
             data = request.json or {}
         
         # --- Validar campos requeridos ---
@@ -876,6 +903,11 @@ def create_activity(current_user):
 
             return jsonify({"error": "Formato de fecha inválido. Usar formato ISO 8601"}), 400
         
+        # --- Validar que la fecha de inicio sea posterior a la actual ---
+        if start_date <= datetime.now(UTC):
+
+            return jsonify({"error": "La fecha de inicio debe ser posterior a la fecha y hora actuales"}), 400
+
         # --- Validar que la fecha de fin sea posterior a la de inicio ---
         if finish_date <= start_date:
 
@@ -884,12 +916,17 @@ def create_activity(current_user):
         # --- Procesar imagen ---
         image_filename = None
         if 'image' in request.files:
+
             file = request.files['image']
+
             if file and file.filename != '' and allowed_file(file.filename):
+
                 filename = secure_filename(file.filename)
-                # --- Añadir timestamp para evitar duplicados ---
-                timestamp = int(datetime.utcnow().timestamp())
+                
+                # --- Añadir timestamp al nombre para evitar duplicados ---
+                timestamp = int(datetime.now(UTC).timestamp())
                 filename = f"{timestamp}_{filename}"
+                
                 file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
                 image_filename = filename
         
@@ -938,8 +975,11 @@ def update_activity(current_user, id_actividad):
 
         # --- Obtener datos de la petición (del form data si hay archivo, o json) ---
         if request.content_type and 'multipart/form-data' in request.content_type:
+
             data = request.form
+            
         else:
+
             data = request.json or {}
 
         name = data.get("name")
@@ -964,6 +1004,7 @@ def update_activity(current_user, id_actividad):
         
         # --- Convertir fechas de string (formato iso) a datetime ---
         try:
+            
             # --- Limpiar comillas extra si vienen del form data ---
             if isinstance(start, str): start = start.strip('"')
             if isinstance(finish, str): finish = finish.strip('"')
@@ -976,6 +1017,11 @@ def update_activity(current_user, id_actividad):
 
             return jsonify({"error": "Formato de fecha inválido. Usar formato ISO 8601"}), 400
         
+        # --- Validar que la fecha de inicio sea posterior a la actual ---
+        if start_date <= datetime.now(UTC):
+
+            return jsonify({"error": "La fecha de inicio debe ser posterior a la fecha y hora actuales"}), 400
+
         # --- Validar que la fecha de fin sea posterior a la de inicio ---
         if finish_date <= start_date:
 
@@ -985,18 +1031,26 @@ def update_activity(current_user, id_actividad):
         image_filename = activity.get("image")
         
         if 'image' in request.files:
+
             file = request.files['image']
+
             if file and file.filename != '' and allowed_file(file.filename):
+
                 # --- Borrar imagen anterior si existe ---
                 if image_filename:
+
                     old_image_path = os.path.join(app.config['UPLOAD_FOLDER'], image_filename)
+
                     if os.path.exists(old_image_path):
+
                         os.remove(old_image_path)
                 
                 filename = secure_filename(file.filename)
+
                 # --- Añadir timestamp para evitar duplicados ---
-                timestamp = int(datetime.utcnow().timestamp())
+                timestamp = int(datetime.now(UTC).timestamp())
                 filename = f"{timestamp}_{filename}"
+
                 file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
                 image_filename = filename
 
@@ -1052,8 +1106,11 @@ def delete_activity(current_user, id_actividad):
         # --- Borrar imagen si existe ---
         image_filename = activity.get("image")
         if image_filename:
+
             image_path = os.path.join(app.config['UPLOAD_FOLDER'], image_filename)
+
             if os.path.exists(image_path):
+                
                 os.remove(image_path)
         
         # --- Eliminar la actividad de las reservas de todos los usuarios ---
@@ -1120,7 +1177,60 @@ def get_activity_attendees(current_user, id_actividad):
 
         return jsonify({"error": str(e)}), 500
 
+# --- GET /api/bookings -> Obtener todas las reservas (solo admin) ---
+@app.route('/api/bookings', methods = ['GET'])
+@token_required
+@admin_required
+def get_all_bookings(current_user):
+
+    try:
+
+        # --- Obtener todos los usuarios que tienen reservas ---
+        users_with_bookings = list(db.users.find({"bookings": {"$exists": True, "$not": {"$size": 0}}}, {"_id": 0, "password": 0}))
+        
+        all_bookings = []
+
+        # --- Buscar todas las actividades para evitar N+1 queries ---
+        activities_list = list(db.activities.find({}, {"_id": 0}))
+        activities_map = {a["id"]: a for a in activities_list}
+
+        # --- Recorrer cada usuario y sus reservas ---
+        for user in users_with_bookings:
+
+            for booking in user.get("bookings", []):
+
+                # --- Buscar la actividad en el mapa ---
+                activity = activities_map.get(booking["activity_id"])
+                
+                if activity:
+
+                    # --- Enriquecer la reserva con datos del usuario y de la actividad ---
+                    all_bookings.append({
+
+                        "user_id": user["id"],
+                        "user_name": user["name"],
+                        "username": user["username"],
+                        "activity_id": booking["activity_id"],
+                        "activity_name": activity["name"],
+                        "activity_start": (activity["start"].isoformat() + "Z") if isinstance(activity["start"], datetime) else activity["start"],
+                        "activity_finish": (activity["finish"].isoformat() + "Z") if isinstance(activity["finish"], datetime) else activity["finish"],
+                        "activity_state": booking["activity_state"],
+                        "booked_at": (booking.get("booked_at").isoformat() + "Z") if isinstance(booking.get("booked_at"), datetime) else booking.get("booked_at")
+
+                    })
+        
+        # --- Devolver la lista completa de reservas ---
+        return jsonify(all_bookings), 200
+    
+    # --- Si hay algún error, se devuelve ---
+    except Exception as e:
+
+        return jsonify({"error": str(e)}), 500
+
+
 # --- Inicio de la aplicación ---
 if __name__ == '__main__':
 
-    app.run(debug = True, host = '0.0.0.0', port = 5000)
+    # --- En Windows, el reloader por defecto puede dar problemas con select() ---
+    # --- Forzamos el uso de 'stat' que es mas estable en algunos entornos ---
+    app.run(debug = True, host = '0.0.0.0', port = 5000, use_reloader = True)
