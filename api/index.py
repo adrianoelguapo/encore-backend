@@ -1,13 +1,15 @@
 from flask import Flask, jsonify, request
 from flask_pymongo import PyMongo
 from flask_cors import CORS
-from flask_bcrypt import Bcrypt
 from bson import ObjectId
 from datetime import datetime, timedelta, UTC
 from functools import wraps
-import jwt
 import os
 from werkzeug.utils import secure_filename
+
+# --- Importar librerías para JWT y BCRYPT ---
+import jwt
+from flask_bcrypt import Bcrypt
 
 # --- Iniciar el programa ---
 app = Flask(__name__)
@@ -18,7 +20,7 @@ ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 # --- Crear directorio si no existe (asegurarse) ---
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+os.makedirs(UPLOAD_FOLDER, exist_ok = True)
 
 # --- CORS para permitir peticiones desde el front ---
 CORS(app)
@@ -32,9 +34,10 @@ db = mongo.db
 bcrypt = Bcrypt(app)
 
 # --- Clave para JWT ---
-app.config["SECRET_KEY"] = "W5ypf3Rc6essPEUbml69lG1Q4O9tl2ZDJSysu9fSx7Y" # --- Habría que definir la clave en el .env pero dió alta pereza ---
+# --- Para corrección fácil se mete la clave a pelo (no tener en cuenta sé que hay que ponerla en el .env) ---
+app.config["SECRET_KEY"] = "W5ypf3Rc6essPEUbml69lG1Q4O9tl2ZDJSysu9fSx7Y"
 
-# --- Helpers ---
+# --- Métodos auxiliares ---
 
 # --- Generar ID para crear nuevos usuarios o actividades sin que se repitan (pilla el máximo y suma 1) ---
 def get_next_id(collection_name):
@@ -60,6 +63,21 @@ def get_activity_dates(activity_id):
 
     return activity["start"], activity["finish"]
 
+# --- Formatear fecha para el frontend (siempre UTC con Z) ---
+def format_date_utc(dt):
+
+    if not dt or not isinstance(dt, datetime):
+
+        return dt
+    
+    # --- Si es naive (sin zona horaria), asumimos que es UTC y le añadimos Z ---
+    if dt.tzinfo is None:
+
+        return dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+    
+    # --- Si es aware, la convertimos a UTC y usamos el formato con Z ---
+    return dt.astimezone(UTC).strftime('%Y-%m-%dT%H:%M:%SZ')
+
 # --- Comprobar si alguna reserva pisa el horario de otra (solo se tienen en cuenta las reservas no canceladas) ---
 def check_time_overlap(user_bookings, new_start, new_finish, exclude_activity_id = None, activities_map = None):
 
@@ -73,10 +91,12 @@ def check_time_overlap(user_bookings, new_start, new_finish, exclude_activity_id
 
         # --- Excluir la actividad específica si se indica ---
         if exclude_activity_id and booking["activity_id"] == exclude_activity_id:
+
             continue
         
         # --- Solo comprobar reservas activas (no canceladas) ---
         if booking.get("activity_state") in ["cancel", "no assist"]:
+
             continue
         
         # --- Obtener las fechas de la actividad de la reserva desde el mapa ---
@@ -84,6 +104,7 @@ def check_time_overlap(user_bookings, new_start, new_finish, exclude_activity_id
         
         # --- Si no se encuentra la actividad, saltar ---
         if not activity:
+
             continue
             
         booking_start = activity["start"]
@@ -91,6 +112,7 @@ def check_time_overlap(user_bookings, new_start, new_finish, exclude_activity_id
         
         # --- Comprobar si se pisan: dos periodos se pisan si uno empieza antes de que termine el otro ---
         if (new_start < booking_finish and new_finish > booking_start):
+            
             return True
     
     return False
@@ -128,6 +150,7 @@ def token_required(f):
             return jsonify({"error": "Token no proporcionado"}), 401
         
         try:
+            
             # --- Decodificar el token ---
             data = jwt.decode(token, app.config["SECRET_KEY"], algorithms = ["HS256"])
             
@@ -136,6 +159,7 @@ def token_required(f):
             
             # --- Si no se encuentra el usuario devuelve error ---
             if not current_user:
+
                 return jsonify({"error": "Usuario no encontrado"}), 401
         
         # --- Si el token ha expirado devuelve error ---
@@ -247,7 +271,7 @@ def register():
         # --- Validar que se proporcionen nombre, username y pass ---
         if not username or not password or not name:
 
-            return jsonify({"error": "Username, password y name son requeridos"}), 400
+            return jsonify({"error": "All fields are required"}), 400
         
         # --- Verificar que el nombre de usuario a registrar no esté ocupado ---
         existing_user = db.users.find_one({"username": username})
@@ -255,7 +279,7 @@ def register():
         # --- Si el nombre de usuario ya está ocupado devuelve error ---
         if existing_user:
 
-            return jsonify({"error": "Ese nombre de usuario ya existe"}), 409
+            return jsonify({"error": "Username already taken"}), 409
         
         # --- Hashear la pass con bcrypt ---
         hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
@@ -298,7 +322,7 @@ def register():
         # --- Se devuelve el token y los datos del usuario ---
         return jsonify({
 
-            "message": "Usuario registrado exitosamente",
+            "message": "Register was successful",
             "token": token,
             "user": user_data
 
@@ -509,10 +533,10 @@ def get_user_bookings(current_user, id_usuario):
                     "activity_id": booking["activity_id"],
                     "activity_name": activity["name"],
                     "activity_description": activity["description"],
-                    "activity_start": (activity["start"].isoformat() + "Z") if isinstance(activity["start"], datetime) else activity["start"],
-                    "activity_finish": (activity["finish"].isoformat() + "Z") if isinstance(activity["finish"], datetime) else activity["finish"],
+                    "activity_start": format_date_utc(activity.get("start")),
+                    "activity_finish": format_date_utc(activity.get("finish")),
                     "activity_state": booking["activity_state"],
-                    "booked_at": (booking.get("booked_at").isoformat() + "Z") if isinstance(booking.get("booked_at"), datetime) else booking.get("booked_at")
+                    "booked_at": format_date_utc(booking.get("booked_at"))
                 })
         
         # --- Devolver las reservas ---    
@@ -805,16 +829,11 @@ def get_all_activities(current_user):
 
             ]
         
-        # --- Convertir fechas a string ISO para el frontend ---
+        # --- Convertir fechas a string ISO con el sufijo 'Z' para el frontend ---
         for activity in activities:
 
-            if "start" in activity and isinstance(activity["start"], datetime):
-
-                activity["start"] = activity["start"].isoformat()
-
-            if "finish" in activity and isinstance(activity["finish"], datetime):
-
-                activity["finish"] = activity["finish"].isoformat()
+            activity["start"] = format_date_utc(activity.get("start"))
+            activity["finish"] = format_date_utc(activity.get("finish"))
 
         # --- Se devuelve la lista de actividades ---
         return jsonify(activities), 200
@@ -840,14 +859,9 @@ def get_activity(current_user, id_actividad):
 
             return jsonify({"error": "Actividad no encontrada"}), 404
         
-        # --- Convertir fechas a string ISO ---
-        if "start" in activity and isinstance(activity["start"], datetime):
-
-            activity["start"] = activity["start"].isoformat()
-
-        if "finish" in activity and isinstance(activity["finish"], datetime):
-
-            activity["finish"] = activity["finish"].isoformat()
+        # --- Convertir fechas a string ISO con el sufijo 'Z' ---
+        activity["start"] = format_date_utc(activity.get("start"))
+        activity["finish"] = format_date_utc(activity.get("finish"))
 
         # --- Se devuelve la actividad ---
         return jsonify(activity), 200
@@ -895,6 +909,7 @@ def create_activity(current_user):
             if isinstance(start, str): start = start.strip('"')
             if isinstance(finish, str): finish = finish.strip('"')
 
+            # --- Convertir fechas a formato datetime ---
             start_date = datetime.fromisoformat(start.replace('Z', '+00:00'))
             finish_date = datetime.fromisoformat(finish.replace('Z', '+00:00'))
 
@@ -948,9 +963,13 @@ def create_activity(current_user):
         # --- Insertar la actividad en la base de datos ---
         db.activities.insert_one(new_activity)
         
-        # --- Quitar id de mongo (es que no se utiliza pa na) ---
+        # --- Quitar id de mongo ---
         new_activity.pop("_id")
         
+        # --- Formatear fechas para la respuesta ---
+        new_activity["start"] = format_date_utc(new_activity.get("start"))
+        new_activity["finish"] = format_date_utc(new_activity.get("finish"))
+
         # --- Se devuelve mensaje de éxito ---
         return jsonify({
 
@@ -1073,6 +1092,12 @@ def update_activity(current_user, id_actividad):
         # --- Devolver actividad actualizada (sin id de Mongo) ---
         updated_activity = db.activities.find_one({"id": id_actividad}, {"_id": 0})
         
+        # --- Formatear fechas para la respuesta ---
+        if updated_activity:
+
+            updated_activity["start"] = format_date_utc(updated_activity.get("start"))
+            updated_activity["finish"] = format_date_utc(updated_activity.get("finish"))
+
         # --- Devolver mensaje de éxito ---
         return jsonify({
 
