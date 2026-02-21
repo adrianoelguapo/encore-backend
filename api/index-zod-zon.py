@@ -11,6 +11,9 @@ from werkzeug.utils import secure_filename
 import jwt
 from flask_bcrypt import Bcrypt
 
+# --- Importar librería zon para validación de datos (ESTO ES PA ROBER) ---
+import zon
+
 # --- Iniciar el programa ---
 app = Flask(__name__)
 
@@ -36,6 +39,26 @@ bcrypt = Bcrypt(app)
 # --- Clave para JWT ---
 # --- Para corrección fácil se mete la clave a pelo (no tener en cuenta sé que hay que ponerla en el .env) ---
 app.config["SECRET_KEY"] = "W5ypf3Rc6essPEUbml69lG1Q4O9tl2ZDJSysu9fSx7Y"
+
+# --- Esquemas para validar con zon (ESTO ES PA ROBER) ---
+
+# --- En el login el usuario y la contraseña son obligatorios ---
+login_schema = zon.record({
+
+    "username": zon.string(),
+    "password": zon.string()
+
+})
+
+# --- En el registro el nombre, el usuario y la contraseña son obligatorios, y el rol se pone opcional porque el dato se asigna por defecto ---
+register_schema = zon.record({
+
+    "name": zon.string(),
+    "username": zon.string(),
+    "password": zon.string(),
+    "role": zon.optional(zon.string())
+
+})
 
 # --- Métodos auxiliares ---
 
@@ -203,22 +226,27 @@ def login():
 
     try:
 
-        # --- Se obtienen nombre y contraseña de la petición ---
-        data = request.json
-        username = data.get("username")
-        password = data.get("password")
-        
-        # --- Validar que se proporcionen nombre de usuario y pass ---
-        if not username or not password:
+        # --- Se valida la petición con el esquema de login hecho con zon ---
+        try:
+            
+            # --- Zon parsea el JSON y verifica que cumple el esquema ---
+            validated_data = login_schema.validate(request.json)
 
-            return jsonify({"error": "Username and password are required"}), 400
+        except Exception as validation_error:
+
+            # --- Si falta la contraseña o el username, salta el error ---
+            return jsonify({"error": "All fields are required", "details": str(validation_error)}), 400
+
+        # --- Al pasar la validación, se guardan los datos en variables ---
+        username = validated_data["username"]
+        password = validated_data["password"]
         
-        # --- Busca el usuario en base de datos (se busca por username porque es UNIQUE) ---
+        # --- Busca el usuario en la base de datos ---
         user = db.users.find_one({"username": username})
         
-        # --- Verificar que el usuario existe y la contraseña es correcta ---
+        # --- Si no existe el usuario o la contraseña es incorrecta, devuelve error ---
         if not user or not bcrypt.check_password_hash(user["password"], password):
-
+            
             return jsonify({"error": "Invalid credentials"}), 401
         
         # --- Generar token válido por 24 horas ---
@@ -241,18 +269,12 @@ def login():
 
         }
         
-        # --- Se devuelve el token y los datos del usuario ---
-        return jsonify({
-
-            "message": "Login successful",
-            "token": token,
-            "user": user_data
-
-        }), 200
+        # --- Devolver el token y los datos del usuario ---    
+        return jsonify({"message": "Login successful", "token": token, "user": user_data}), 200
         
-    # --- Si hay algún error, se devuelve un error ---
     except Exception as e:
 
+        # --- Si hay un error, se devuelve ---    
         return jsonify({"error": str(e)}), 500
 
 
@@ -261,28 +283,33 @@ def login():
 def register():
 
     try:
-
-        # --- Se obtienen los datos de la petición ---
-        data = request.json
-        username = data.get("username")
-        password = data.get("password")
-        name = data.get("name")
-        role = data.get("role", "user") # --- Se asigna rol de usuario por defecto ---
         
-        # --- Validar que se proporcionen nombre, username y pass ---
-        if not username or not password or not name:
+        # --- Se valida la petición con el esquema de registro de zon ---
+        try:
+            
+            # --- Zon parsea el JSON y verifica que cumple el esquema ---
+            validated_data = register_schema.validate(request.json)
 
-            return jsonify({"error": "All fields are required"}), 400
+        except Exception as validation_error:
+
+            # --- Si falta algún campo, salta el error ---
+            return jsonify({"error": "All fields are required", "details": str(validation_error)}), 400
         
-        # --- Verificar que el nombre de usuario a registrar no esté ocupado ---
+        # --- Al pasar la validación, se guardan los datos en variables ---
+        username = validated_data["username"]
+        password = validated_data["password"]
+        name = validated_data["name"]
+        role = validated_data.get("role", "user") 
+        
+        # --- Se busca si el nombre de usuario ya está ocupado ---
         existing_user = db.users.find_one({"username": username})
-
-        # --- Si el nombre de usuario ya está ocupado devuelve error ---
+        
+        # --- Si el nombre de usuario está ocupado, devuelve error ---
         if existing_user:
 
             return jsonify({"error": "Username already taken"}), 409
         
-        # --- Hashear la pass con bcrypt ---
+        # --- Hashear la pass y crear usuario ---
         hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
         
         # --- Se crea el nuevo usuario ---
@@ -297,10 +324,9 @@ def register():
 
         }
         
-        # --- Se inserta el nuevo usuario en la base de datos ---
         db.users.insert_one(new_user)
         
-        # --- Se genera el token JWT para el nuevo usuario ---
+        # --- Token con datos del usuario y expiración de 24 horas ---
         token = jwt.encode({
 
             "user_id": new_user["id"],
@@ -310,7 +336,7 @@ def register():
 
         }, app.config["SECRET_KEY"], algorithm = "HS256")
         
-        # --- Se preparan los datos del usuario (sin pass (ya existe el token) ni el id de Mongo (no se utiliza)) ---
+        # --- Datos del usuario (sin pass porque hay token) para devolver junto al token ---
         user_data = {
 
             "id": new_user["id"],
@@ -320,18 +346,12 @@ def register():
 
         }
         
-        # --- Se devuelve el token y los datos del usuario ---
-        return jsonify({
-
-            "message": "Register was successful",
-            "token": token,
-            "user": user_data
-
-        }), 201
+        # --- Se devuelve el token y los datos del usuario ---    
+        return jsonify({"message": "Register was successful", "token": token, "user": user_data}), 201
     
-    # --- Si hay algún error, se devuelve ---
     except Exception as e:
 
+        # --- Si hay un error, se devuelve ---    
         return jsonify({"error": str(e)}), 500
 
 
