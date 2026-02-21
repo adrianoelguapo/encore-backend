@@ -81,8 +81,9 @@ def format_date_utc(dt):
 # --- Comprobar si alguna reserva pisa el horario de otra (solo se tienen en cuenta las reservas no canceladas) ---
 def check_time_overlap(user_bookings, new_start, new_finish, exclude_activity_id = None, activities_map = None):
 
-    # --- if activities_map is not provided, fetch all activities once (fallback) ---
+    # --- Si no se proporciona el mapeo de actividades, se crea uno (para evitar duplicar datos en las reservas) ---
     if activities_map is None:
+
         activities = list(db.activities.find({}, {"_id": 0}))
         activities_map = {a["id"]: a for a in activities}
 
@@ -142,12 +143,12 @@ def token_required(f):
             # --- Si no se puede dividir el header devuelve error ---
             except IndexError:
 
-                return jsonify({"error": "Formato de token inválido"}), 401
+                return jsonify({"error": "Invalid token format"}), 401
         
         # --- Si no se envía el token devuelve error ---
         if not token:
 
-            return jsonify({"error": "Token no proporcionado"}), 401
+            return jsonify({"error": "Token not provided"}), 401
         
         try:
             
@@ -160,17 +161,17 @@ def token_required(f):
             # --- Si no se encuentra el usuario devuelve error ---
             if not current_user:
 
-                return jsonify({"error": "Usuario no encontrado"}), 401
+                return jsonify({"error": "User not found"}), 401
         
         # --- Si el token ha expirado devuelve error ---
         except jwt.ExpiredSignatureError:
 
-            return jsonify({"error": "Token expirado"}), 401
+            return jsonify({"error": "Token expired"}), 401
 
         # --- Si el token es inválido devuelve error ---
         except jwt.InvalidTokenError:
 
-            return jsonify({"error": "Token inválido"}), 401
+            return jsonify({"error": "Invalid token"}), 401
         
         # --- Pasar el usuario actual a la función ---
         return f(current_user, *args, **kwargs)
@@ -186,7 +187,7 @@ def admin_required(f):
         # --- Si el usuario no es admin devuelve error ---
         if current_user.get("role") != "admin":
 
-            return jsonify({"error": "Acceso denegado. Se requiere rol de administrador"}), 403
+            return jsonify({"error": "Access denied. Admin role required"}), 403
         
         # --- Pasar el usuario actual a la función ---
         return f(current_user, *args, **kwargs)
@@ -210,7 +211,7 @@ def login():
         # --- Validar que se proporcionen nombre de usuario y pass ---
         if not username or not password:
 
-            return jsonify({"error": "Username y password son requeridos"}), 400
+            return jsonify({"error": "Username and password are required"}), 400
         
         # --- Busca el usuario en base de datos (se busca por username porque es UNIQUE) ---
         user = db.users.find_one({"username": username})
@@ -218,7 +219,7 @@ def login():
         # --- Verificar que el usuario existe y la contraseña es correcta ---
         if not user or not bcrypt.check_password_hash(user["password"], password):
 
-            return jsonify({"error": "Credenciales inválidas"}), 401
+            return jsonify({"error": "Invalid credentials"}), 401
         
         # --- Generar token válido por 24 horas ---
         token = jwt.encode({
@@ -243,7 +244,7 @@ def login():
         # --- Se devuelve el token y los datos del usuario ---
         return jsonify({
 
-            "message": "Login exitoso",
+            "message": "Login successful",
             "token": token,
             "user": user_data
 
@@ -364,7 +365,7 @@ def get_user(current_user, id_usuario):
         # --- Verificar permisos: solo puede ver su propio perfil y los admin pueden ver cualquier usuario ---
         if current_user["id"] != id_usuario and current_user["role"] != "admin":
 
-            return jsonify({"error": "No tienes permisos para ver este usuario"}), 403
+            return jsonify({"error": "You don't have permission to view this user"}), 403
         
         # --- Se busca el usuario por ID (sin pass ni id de Mongo) ---
         user = db.users.find_one({"id": id_usuario}, {"_id": 0, "password": 0})
@@ -392,7 +393,7 @@ def modify_user(current_user, id_usuario):
         # --- Verificar permisos: solo puede modificar su propio perfil y los admin pueden modificar cualquier usuario ---
         if current_user["id"] != id_usuario and current_user["role"] != "admin":
 
-            return jsonify({"error": "No tienes permisos para modificar este usuario"}), 403
+            return jsonify({"error": "You don't have permission to modify this user"}), 403
         
         # --- Se obtienen los datos de la petición ---
         data = request.json
@@ -403,7 +404,7 @@ def modify_user(current_user, id_usuario):
         # --- Validar que se envíen todos los campos requeridos ---
         if not name or not username or not password:
 
-            return jsonify({"error": "Name, username y password son requeridos"}), 400
+            return jsonify({"error": "All fields are required"}), 400
         
         # --- Buscar el usuario a modificar ---
         user = db.users.find_one({"id": id_usuario})
@@ -411,7 +412,7 @@ def modify_user(current_user, id_usuario):
         # --- Si no se encuentra el usuario, se devuelve error ---
         if not user:
 
-            return jsonify({"error": "Usuario no encontrado"}), 404
+            return jsonify({"error": "User not found"}), 404
         
         # --- Verificar que el nuevo nombre de usuario no esté ocupado ---
         existing_user = db.users.find_one({
@@ -424,7 +425,7 @@ def modify_user(current_user, id_usuario):
         # --- Si el nombre de usuario ya existe, devolver error ---
         if existing_user:
 
-            return jsonify({"error": "El username ya existe"}), 409
+            return jsonify({"error": "Username already taken"}), 409
         
         # --- Hashear la nueva contraseña ---
         hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
@@ -447,7 +448,7 @@ def modify_user(current_user, id_usuario):
         # --- Devolver usuario actualizado ---
         return jsonify({
 
-            "message": "Usuario actualizado exitosamente",
+            "message": "User updated successfully",
             "user": updated_user
 
         }), 200
@@ -472,7 +473,7 @@ def delete_user(current_user, id_usuario):
         # --- Si no se encuentra el usuario, devolver error ---
         if not user:
 
-            return jsonify({"error": "Usuario no encontrado"}), 404
+            return jsonify({"error": "User not found"}), 404
         
         # --- Eliminar el usuario de todas las actividades donde esté registrado ---
         db.activities.update_many(
@@ -486,7 +487,7 @@ def delete_user(current_user, id_usuario):
         db.users.delete_one({"id": id_usuario})
         
         # --- Devolver mensaje de éxito ---
-        return jsonify({"message": "Usuario eliminado exitosamente"}), 200
+        return jsonify({"message": "User deleted successfully"}), 200
     
     # --- Si hay algún error, se devuelve ---
     except Exception as e:
@@ -504,7 +505,7 @@ def get_user_bookings(current_user, id_usuario):
         # --- Verificar permisos: solo puede ver sus propias reservas y los admin pueden ver las reservas de cualquier usuario ---
         if current_user["id"] != id_usuario and current_user["role"] != "admin":
 
-            return jsonify({"error": "No tienes permisos para ver estas reservas"}), 403
+            return jsonify({"error": "You don't have permission to view these bookings"}), 403
         
         # --- Buscar el usuario ---
         user = db.users.find_one({"id": id_usuario})
@@ -512,7 +513,7 @@ def get_user_bookings(current_user, id_usuario):
         # --- Si no se encuentra el usuario, devolver error ---
         if not user:
 
-            return jsonify({"error": "Usuario no encontrado"}), 404
+            return jsonify({"error": "User not found"}), 404
         
         # --- Buscar todas las actividades para evitar N+1 queries ---
         activities_list = list(db.activities.find({}, {"_id": 0}))
@@ -529,7 +530,9 @@ def get_user_bookings(current_user, id_usuario):
             
             # --- Si se encuentra la actividad, se añade a la lista ---
             if activity:
+
                 enriched_bookings.append({
+
                     "activity_id": booking["activity_id"],
                     "activity_name": activity["name"],
                     "activity_description": activity["description"],
@@ -537,6 +540,7 @@ def get_user_bookings(current_user, id_usuario):
                     "activity_finish": format_date_utc(activity.get("finish")),
                     "activity_state": booking["activity_state"],
                     "booked_at": format_date_utc(booking.get("booked_at"))
+
                 })
         
         # --- Devolver las reservas ---    
@@ -556,7 +560,7 @@ def book_activity(current_user, id_usuario, id_actividad):
     try:
         # --- Verificar permisos: solo puede reservar para si mismo y los admin pueden reservar para cualquier usuario ---
         if current_user["id"] != id_usuario and current_user["role"] != "admin":
-            return jsonify({"error": "No tienes permisos para hacer esta reserva"}), 403
+            return jsonify({"error": "You don't have permission to book this activity"}), 403
         
         # --- Buscar usuario y actividad ---
         user = db.users.find_one({"id": id_usuario})
@@ -565,21 +569,21 @@ def book_activity(current_user, id_usuario, id_actividad):
         # --- Si no se encuentra el usuario o la actividad, se devuelve error ---
         if not user:
 
-            return jsonify({"error": "Usuario no encontrado"}), 404
+            return jsonify({"error": "User not found"}), 404
 
         if not activity:
 
-            return jsonify({"error": "Actividad no encontrada"}), 404
+            return jsonify({"error": "Activity not found"}), 404
         
         # --- Si la actividad ya ha acabado, se devuelve error ---
         if activity["state"] != "active":
 
-            return jsonify({"error": "La actividad no está activa"}), 400
+            return jsonify({"error": "The activity is not active"}), 400
         
         # --- Si no quedan plazas disponibles, se devuelve error ---
         if len(activity.get("users", [])) >= activity["capacity"]:
 
-            return jsonify({"error": "La actividad está llena"}), 400
+            return jsonify({"error": "The activity is full"}), 400
         
         # --- Verificar si ya existe una reserva para esta actividad ---
         existing_booking = None
@@ -593,12 +597,12 @@ def book_activity(current_user, id_usuario, id_actividad):
         # --- Si existe una reserva activa (no cancelada), no permitir duplicado ---
         if existing_booking and existing_booking.get("activity_state") not in ["cancel", "no assist"]:
 
-            return jsonify({"error": "Ya tienes una reserva activa para esta actividad"}), 409
+            return jsonify({"error": "You already have an active booking for this activity"}), 409
         
         # --- Comprobar si esta reserva se pisa con otra ---
         if check_time_overlap(user.get("bookings", []), activity["start"], activity["finish"], id_actividad):
 
-            return jsonify({"error": "Tienes otra reserva durante este horario"}), 409
+            return jsonify({"error": "You have another booking during this time"}), 409
         
         # --- Crear la nueva reserva ---
         new_booking = {
@@ -625,6 +629,7 @@ def book_activity(current_user, id_usuario, id_actividad):
             )
 
         else:
+
             # --- Si no existe ninguna reserva en esta actividad, se añade ---
             db.users.update_one(
 
@@ -642,7 +647,7 @@ def book_activity(current_user, id_usuario, id_actividad):
         )
         
         # --- Se devuelve mensaje de éxito ---
-        return jsonify({"message": "Actividad reservada exitosamente"}), 200
+        return jsonify({"message": "Activity booked successfully"}), 200
     
     # --- Si hay algún error, se devuelve ---
     except Exception as e:
@@ -656,10 +661,11 @@ def book_activity(current_user, id_usuario, id_actividad):
 def cancel_activity(current_user, id_usuario, id_actividad):
 
     try:
+
         # --- Verificar permisos: solo puede cancelar su propia reserva y los admin pueden cancelar cualquier reserva ---
         if current_user["id"] != id_usuario and current_user["role"] != "admin":
 
-            return jsonify({"error": "No tienes permisos para cancelar esta reserva"}), 403
+            return jsonify({"error": "You don't have permission to cancel this booking"}), 403
         
         # --- Buscar el usuario y la actividad ---
         user = db.users.find_one({"id": id_usuario})
@@ -668,11 +674,11 @@ def cancel_activity(current_user, id_usuario, id_actividad):
         # --- Si no se encuentra el usuario o la actividad, se devuelve error ---
         if not user:
 
-            return jsonify({"error": "Usuario no encontrado"}), 404
+            return jsonify({"error": "User not found"}), 404
 
         if not activity:
 
-            return jsonify({"error": "Actividad no encontrada"}), 404
+            return jsonify({"error": "Activity not found"}), 404
         
         # --- Se busca la reserva ---
         booking = None
@@ -687,12 +693,12 @@ def cancel_activity(current_user, id_usuario, id_actividad):
         # --- Si no se encuentra la reserva, se devuelve error ---
         if not booking:
 
-            return jsonify({"error": "Reserva no encontrada"}), 404
+            return jsonify({"error": "Booking not found"}), 404
         
         # --- Verificar que la reserva no esté ya cancelada ---
         if booking.get("activity_state") in ["cancel", "no assist"]:
 
-            return jsonify({"error": "La reserva ya está cancelada"}), 400
+            return jsonify({"error": "Booking already cancelled"}), 400
         
         # --- Calcular tiempo hasta el inicio de la actividad ---
         activity_start = activity["start"]
@@ -733,7 +739,7 @@ def cancel_activity(current_user, id_usuario, id_actividad):
         # --- Se devuelve mensaje de éxito ---
         return jsonify({
             
-            "message": f"Actividad cancelada con estado: {new_state}",
+            "message": f"Activity cancelled with state: {new_state}",
             "state": new_state
 
         }), 200
@@ -759,11 +765,11 @@ def mark_attendance(current_user, id_usuario, id_actividad):
         # --- Si no se encuentra el usuario o la actividad, se devuelve error ---
         if not user:
 
-            return jsonify({"error": "Usuario no encontrado"}), 404
+            return jsonify({"error": "User not found"}), 404
 
         if not activity:
 
-            return jsonify({"error": "Actividad no encontrada"}), 404
+            return jsonify({"error": "Activity not found"}), 404
         
         # --- Buscar la reserva ---
         booking = None
@@ -778,7 +784,7 @@ def mark_attendance(current_user, id_usuario, id_actividad):
         # --- Si no se encuentra la reserva, se devuelve error ---
         if not booking:
 
-            return jsonify({"error": "Reserva no encontrada"}), 404
+            return jsonify({"error": "Booking not found"}), 404
         
         # --- Marcar asistencia ---
         db.users.update_one(
@@ -789,7 +795,7 @@ def mark_attendance(current_user, id_usuario, id_actividad):
         )
         
         # --- Se devuelve mensaje de éxito ---
-        return jsonify({"message": "Asistencia marcada exitosamente"}), 200
+        return jsonify({"message": "Attendance marked successfully"}), 200
     
     # --- Si hay algún error, se devuelve ---
     except Exception as e:
@@ -857,7 +863,7 @@ def get_activity(current_user, id_actividad):
         # --- Si no se encuentra la actividad, se devuelve error ---
         if not activity:
 
-            return jsonify({"error": "Actividad no encontrada"}), 404
+            return jsonify({"error": "Activity not found"}), 404
         
         # --- Convertir fechas a string ISO con el sufijo 'Z' ---
         activity["start"] = format_date_utc(activity.get("start"))
@@ -916,17 +922,17 @@ def create_activity(current_user):
         # --- Si el formato de la fecha es inválido, se devuelve error ---
         except ValueError:
 
-            return jsonify({"error": "Formato de fecha inválido. Usar formato ISO 8601"}), 400
+            return jsonify({"error": "Invalid date format. Use ISO format"}), 400
         
         # --- Validar que la fecha de inicio sea posterior a la actual ---
         if start_date <= datetime.now(UTC):
 
-            return jsonify({"error": "La fecha de inicio debe ser posterior a la fecha y hora actuales"}), 400
+            return jsonify({"error": "Start date must be after current date and time"}), 400
 
         # --- Validar que la fecha de fin sea posterior a la de inicio ---
         if finish_date <= start_date:
 
-            return jsonify({"error": "La fecha de fin debe ser posterior a la de inicio"}), 400
+            return jsonify({"error": "Finish date must be after start date"}), 400
         
         # --- Procesar imagen ---
         image_filename = None
@@ -942,6 +948,7 @@ def create_activity(current_user):
                 timestamp = int(datetime.now(UTC).timestamp())
                 filename = f"{timestamp}_{filename}"
                 
+                # --- Guardar imagen en el server ---
                 file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
                 image_filename = filename
         
@@ -973,7 +980,7 @@ def create_activity(current_user):
         # --- Se devuelve mensaje de éxito ---
         return jsonify({
 
-            "message": "Actividad creada exitosamente",
+            "message": "Activity created successfully",
             "activity": new_activity
 
         }), 201
@@ -1011,7 +1018,7 @@ def update_activity(current_user, id_actividad):
         # --- Validar que se envíen todos los campos ---
         if not name or not description or not start or not finish or not capacity or not state:
 
-            return jsonify({"error": "Completa todos los campos"}), 400
+            return jsonify({"error": "Complete all fields"}), 400
         
         # --- Buscar actividad ---
         activity = db.activities.find_one({"id": id_actividad})
@@ -1019,7 +1026,7 @@ def update_activity(current_user, id_actividad):
         # --- Si no se encuentra la actividad, se devuelve error ---
         if not activity:
 
-            return jsonify({"error": "Actividad no encontrada"}), 404
+            return jsonify({"error": "Activity not found"}), 404
         
         # --- Convertir fechas de string (formato iso) a datetime ---
         try:
@@ -1034,17 +1041,17 @@ def update_activity(current_user, id_actividad):
         # --- Si el formato de fecha es inválido, se devuelve error ---
         except ValueError:
 
-            return jsonify({"error": "Formato de fecha inválido. Usar formato ISO 8601"}), 400
+            return jsonify({"error": "Invalid date format. Use ISO format"}), 400
         
         # --- Validar que la fecha de inicio sea posterior a la actual ---
         if start_date <= datetime.now(UTC):
 
-            return jsonify({"error": "La fecha de inicio debe ser posterior a la fecha y hora actuales"}), 400
+            return jsonify({"error": "Start date must be after current date and time"}), 400
 
         # --- Validar que la fecha de fin sea posterior a la de inicio ---
         if finish_date <= start_date:
 
-            return jsonify({"error": "La fecha de fin debe ser posterior a la de inicio"}), 400
+            return jsonify({"error": "Finish date must be after start date"}), 400
         
         # --- Procesar imagen (si se envía una nueva) ---
         image_filename = activity.get("image")
@@ -1101,7 +1108,7 @@ def update_activity(current_user, id_actividad):
         # --- Devolver mensaje de éxito ---
         return jsonify({
 
-            "message": "Actividad actualizada exitosamente",
+            "message": "Activity updated successfully",
             "activity": updated_activity
 
         }), 200
@@ -1126,7 +1133,7 @@ def delete_activity(current_user, id_actividad):
         # --- Si no se encuentra la actividad, se devuelve error ---
         if not activity:
 
-            return jsonify({"error": "Actividad no encontrada"}), 404
+            return jsonify({"error": "Activity not found"}), 404
         
         # --- Borrar imagen si existe ---
         image_filename = activity.get("image")
@@ -1150,7 +1157,7 @@ def delete_activity(current_user, id_actividad):
         db.activities.delete_one({"id": id_actividad})
         
         # --- Devolver mensaje de éxito ---
-        return jsonify({"message": "Actividad eliminada exitosamente"}), 200
+        return jsonify({"message": "Activity deleted successfully"}), 200
         
     except Exception as e:
         
@@ -1172,7 +1179,7 @@ def get_activity_attendees(current_user, id_actividad):
         # --- Si no se encuentra la actividad, se devuelve error ---
         if not activity:
 
-            return jsonify({"error": "Actividad no encontrada"}), 404
+            return jsonify({"error": "Activity not found"}), 404
         
         # --- Obtener información completa de cada asistente ---
         attendees = []

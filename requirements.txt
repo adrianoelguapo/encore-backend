@@ -5,3 +5,4 @@ Flask-Cors==6.0.2
 flask-bcrypt==1.0.1
 bcrypt==5.0.0
 PyJWT==2.10.1
+zon==0.1.0
