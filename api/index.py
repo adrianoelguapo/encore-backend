@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, UTC
 from functools import wraps
 import os
 from werkzeug.utils import secure_filename
+from zoneinfo import ZoneInfo
 
 # --- Importar librerías para JWT y BCRYPT (ESTO ES PA ROBER) ---
 import jwt
@@ -810,18 +811,41 @@ def get_all_activities(current_user):
 
     try:
         
-        # --- Iniciar variable para el filtro de la consulta ---
-        filter_query = {}
-        
-        # --- Si se pasa el estado de la actividad, se aplica el filtro a la consulta ---
-        state = request.args.get('state')
+        # --- Obtener la hora actual exacta en Madrid ---
+        madrid_tz = ZoneInfo("Europe/Madrid")
+        now_madrid = datetime.now(madrid_tz)
 
+        # --- Obtener todas las actividades sin filtro inicial ---
+        activities = list(db.activities.find({}, {"_id": 0}))
+
+        # --- Actualizar estados a 'finished' si la fecha de fin ya pasó ---
+        for activity in activities:
+            
+            # --- Convertir la fecha de fin de la bbdd a la zona horaria de Madrid ---
+            finish_utc = activity["finish"].replace(tzinfo = UTC)
+            finish_madrid = finish_utc.astimezone(madrid_tz)
+
+            # --- Si ya pasó la fecha de fin y no está marcada como finished, se actualiza ---
+            if finish_madrid < now_madrid and activity.get("state") != "finished":
+                
+                # --- Actualizar en la base de datos ---
+                db.activities.update_one(
+
+                    {"id": activity["id"]}, 
+                    {"$set": {"state": "finished"}}
+
+                )
+                
+                # --- Actualizar el objeto local para devolverlo correcto al frontend ---
+                activity["state"] = "finished"
+
+        # --- Iniciar variable para el filtro de la consulta (después de actualizar estados) ---
+        state = request.args.get('state')
+        
+        # --- Si se solicita un estado específico, filtramos la lista ---
         if state:
 
-            filter_query["state"] = state
-        
-        # --- Obtener actividades ---
-        activities = list(db.activities.find(filter_query, {"_id": 0}))
+            activities = [a for a in activities if a.get("state") == state]
         
         # --- Si se pasa el parámetro "available", se filtran las actividades disponibles ---
         available = request.args.get('available')
@@ -1263,6 +1287,4 @@ def get_all_bookings(current_user):
 # --- Inicio de la aplicación ---
 if __name__ == '__main__':
 
-    # --- En Windows, el reloader por defecto puede dar problemas con select() ---
-    # --- Forzamos el uso de 'stat' que es mas estable en algunos entornos ---
     app.run(debug = True, host = '0.0.0.0', port = 5000, use_reloader = True)
