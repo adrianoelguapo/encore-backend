@@ -119,6 +119,11 @@ def check_time_overlap(user_bookings, new_start, new_finish, exclude_activity_id
     
     return False
 
+# --- Devuelve la fecha y hora actuales ---
+def get_now():
+
+    return datetime.now(ZoneInfo("Europe/Madrid"))
+
 
 # --- Métodos de autenticación ---
 
@@ -663,7 +668,7 @@ def cancel_activity(current_user, id_usuario, id_actividad):
 
     try:
 
-        # --- Verificar permisos: solo puede cancelar su propia reserva y los admin pueden cancelar cualquier reserva ---
+        # --- Verificar permisos: si no es el propio usuario ni admin, se devuelve error ---
         if current_user["id"] != id_usuario and current_user["role"] != "admin":
 
             return jsonify({"error": "You don't have permission to cancel this booking"}), 403
@@ -673,57 +678,48 @@ def cancel_activity(current_user, id_usuario, id_actividad):
         activity = db.activities.find_one({"id": id_actividad})
         
         # --- Si no se encuentra el usuario o la actividad, se devuelve error ---
-        if not user:
+        if not user or not activity:
 
-            return jsonify({"error": "User not found"}), 404
-
-        if not activity:
-
-            return jsonify({"error": "Activity not found"}), 404
+            return jsonify({"error": "User or Activity not found"}), 404
         
-        # --- Se busca la reserva ---
-        booking = None
-
-        for book in user.get("bookings", []):
-
-            if book["activity_id"] == id_actividad:
-
-                booking = book
-                break
+        # --- Se busca la reserva en el array del usuario ---
+        booking = next((book for book in user.get("bookings", []) if book["activity_id"] == id_actividad), None)
         
         # --- Si no se encuentra la reserva, se devuelve error ---
         if not booking:
 
             return jsonify({"error": "Booking not found"}), 404
         
-        # --- Verificar que la reserva no esté ya cancelada ---
-        if booking.get("activity_state") in ["cancel", "no assist"]:
-
-            return jsonify({"error": "Booking already cancelled"}), 400
+        # --- Hora española ---
+        madrid_tz = ZoneInfo("Europe/Madrid")
         
-        # --- Calcular tiempo hasta el inicio de la actividad ---
-        activity_start = activity["start"]
-        time_until_start = activity_start - datetime.now(UTC).replace(tzinfo=None) # MongoDB dates are naive but UTC usually
-        
-        # --- Si cancela antes de 15min, se cancela pero si queda menos de 15min, se marca como no asistido ---
-        if time_until_start > timedelta(minutes = 15):
+        # --- Convertimos la fecha de inicio del concierto (que está en UTC en la DB) a hora española ---
+        if activity["start"].tzinfo is None:
 
-            new_state = "cancel"
+            # --- Si viene sin zona de la DB, se asume que es UTC y se pasa a hora española ---
+            activity_start_madrid = activity["start"].replace(tzinfo = UTC).astimezone(madrid_tz)
 
         else:
 
-            new_state = "no assist"
-        
-        # --- Se actualiza el estado de la reserva ---
-        db.users.update_one(
+            # --- Si viene con zona de la DB, se pasa a hora española ---
+            activity_start_madrid = activity["start"].astimezone(madrid_tz)
 
-            {"id": id_usuario, "bookings.activity_id": id_actividad},
-            {"$set": {"bookings.$.activity_state": new_state}}
-
-        )
+        # --- Se obtiene la hora actual en Madrid usando el helper ---
+        now_madrid = get_now()
         
-        # --- Si es una cancelación limpia (más de 15min), se elimina el usuario de la actividad ---
-        if new_state == "cancel":
+        # --- Se calcula la diferencia ---
+        time_until_start = activity_start_madrid - now_madrid
+        
+        # --- Si faltan más de 15 minutos para que empiece el concierto ---
+        if time_until_start > timedelta(minutes = 15):
+
+            # --- Cancelación limpia: Se borra del array del usuario y de la actividad ---
+            db.users.update_one(
+
+                {"id": id_usuario},
+                {"$pull": {"bookings": {"activity_id": id_actividad}}}
+
+            )
 
             db.activities.update_one(
 
@@ -731,23 +727,32 @@ def cancel_activity(current_user, id_usuario, id_actividad):
                 {"$pull": {"users": user["username"]}}
 
             )
-        # --- Si es no assist (menos de 15min), NO se elimina para que la plaza siga ocupada ---
+            
+            state_result = "deleted"
+
         else:
 
-            # --- El usuario permanece en activity["users"] ---
-            pass
+            # --- Penalización: Se queda como no asistido porque falta menos de 15 min para el inicio y la plaza se queda ocupada ---
+            db.users.update_one(
+
+                {"id": id_usuario, "bookings.activity_id": id_actividad},
+                {"$set": {"bookings.$.activity_state": "no assist"}}
+
+            )
+
+            state_result = "no assist"
         
-        # --- Se devuelve mensaje de éxito ---
+        # --- Se devuelve mensaje de éxito y el estado de la actividad que se ha cancelado ---
         return jsonify({
-            
-            "message": f"Activity cancelled with state: {new_state}",
-            "state": new_state
+
+            "message": f"Activity cancellation processed",
+            "state": state_result
 
         }), 200
     
-    # --- Si hay algún error, se devuelve ---
     except Exception as e:
 
+        # --- Si hay algún error, se devuelve ---
         return jsonify({"error": str(e)}), 500
 
 
@@ -1177,11 +1182,11 @@ def delete_activity(current_user, id_actividad):
 
         )
         
-        # --- Eliminar la actividad ---
+        # --- Eliminar la actividad de la colección de actividades ---
         db.activities.delete_one({"id": id_actividad})
         
         # --- Devolver mensaje de éxito ---
-        return jsonify({"message": "Activity deleted successfully"}), 200
+        return jsonify({"message": "Activity and associated bookings deleted successfully"}), 200
         
     except Exception as e:
         
